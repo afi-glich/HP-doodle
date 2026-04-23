@@ -1,0 +1,40 @@
+body {
+margin: 0;
+font-family: "Inter", system-ui, sans-serif;
+background: #f4f5fb;
+color: #1a1a1a;
+}
+
+.container {
+max-width: 720px;
+margin: 60px auto;
+padding: 30px;
+background: #ffffff;
+border-radius: 16px;
+box-shadow: 0 20px 45px rgba(16, 42, 66, 0.1);
+}
+
+h1 {
+margin-bottom: 8px;
+}
+
+.status-card {
+padding: 14px 18px;
+border-radius: 10px;
+margin-bottom: 10px;
+font-weight: 600;
+}
+
+.status-card.success {
+background: #e8f6ef;
+color: #0b6b45;
+}
+
+.status-card.error {
+background: #ffe4e4;
+color: #6d1a1a;
+}
+
+section + section {
+margin-top: 30px;
+}

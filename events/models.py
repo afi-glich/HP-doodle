@@ -1,5 +1,10 @@
 import uuid
 from django.db import models
+from datetime import datetime
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum, Boolean, Date, Time
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship
+import enum
 
 
 class Event(models.Model):
