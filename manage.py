@@ -1,22 +1,72 @@
 #!/usr/bin/env python
-"""Django's command-line utility for administrative tasks."""
 import os
 import sys
+from .env import SessionLocal, init_db, drop_db
+from .admin import EventAdmin, PreferenceAdmin
+from .models import User
 
+def init():
+    """Initialize database"""
+    print("Initializing database...")
+    init_db()
+    print("✓ Database initialized")
 
-def main():
-    """Run administrative tasks."""
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+def seed():
+    """Seed database with sample data"""
+    print("Seeding database...")
+    db = SessionLocal()
+    
     try:
-        from django.core.management import execute_from_command_line
-    except ImportError as exc:
-        raise ImportError(
-            "Couldn't import Django. Are you sure it's installed and "
-            "available on your PYTHONPATH environment variable? Did you "
-            "forget to activate a virtual environment?"
-        ) from exc
-    execute_from_command_line(sys.argv)
+        # Create sample users
+        users = [
+            User(username="alice", email="alice@example.com", password_hash="hash1"),
+            User(username="bob", email="bob@example.com", password_hash="hash2"),
+            User(username="charlie", email="charlie@example.com", password_hash="hash3"),
+        ]
+        db.add_all(users)
+        db.commit()
+        print(f"✓ Created {len(users)} users")
+        
+        # Create sample event
+        from datetime import datetime, timedelta
+        from .models import EventType
+        
+        start = datetime.now() + timedelta(days=1)
+        end = start + timedelta(days=7)
+        
+        event = EventAdmin.create_event(
+            db, users[0].id, "Team Offsite", "Annual team meeting",
+            "time_based", start, end
+        )
+        print(f"✓ Created event: {event.title}")
+        
+    finally:
+        db.close()
 
+def drop():
+    """Drop all tables"""
+    confirm = input("⚠️  This will delete all data. Are you sure? (yes/no): ")
+    if confirm.lower() == "yes":
+        drop_db()
+        print("✓ Database dropped")
+    else:
+        print("Cancelled")
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    command = sys.argv[1] if len(sys.argv) > 1 else "help"
+    
+    if command == "init":
+        init()
+    elif command == "seed":
+        seed()
+    elif command == "drop":
+        drop()
+    else:
+        print("""
+        Doodle App Management Commands:
+        
+        python manage.py init    - Initialize database
+        python manage.py seed    - Seed with sample data
+        python manage.py drop    - Drop all tables
+        """)
+        
