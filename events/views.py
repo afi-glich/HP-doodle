@@ -1,121 +1,222 @@
-from django.shortcuts import render
+from django.http import JsonResponse
+from rest_framework import generics, status
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from .models import Event, TimeSlot, Vote
+from .serializers import (
+    EventSerializer,
+    EventCreateSerializer,
+    TimeSlotSerializer,
+    VoteSerializer,
+    VoteCreateUpdateSerializer,
+    EventResultsSerializer,
+    TimeSlotResultSerializer,
+)
 
-from sqlalchemy.orm import Session
-from .models import Event, User, Participant, Preference, TimeSlot, PreferenceStatus
-from .admin import EventAdmin, PreferenceAdmin
-from .env import SessionLocal
-from datetime import datetime
 
-class EventService:
-    """Service layer for event operations"""
+def health_check(request):
+    return JsonResponse({"status": "ok"})
+
+
+# ──────────────────────────────────────
+# EVENT VIEWS
+# ──────────────────────────────────────
+
+class EventListCreateView(generics.ListCreateAPIView):
+    """
+    GET  → Lista tutti gli eventi
+    POST → Crea evento con time slots
+    """
+    queryset = Event.objects.all().order_by('-created_at')
+
+    def get_serializer_class(self):
+        if self.request.method == 'POST':
+            return EventCreateSerializer
+        return EventSerializer
+
+
+class EventDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET    → Dettaglio evento
+    PUT    → Aggiorna evento
+    DELETE → Elimina evento
+    """
+    queryset = Event.objects.all()
+    serializer_class = EventSerializer
+    lookup_field = 'pk'
+
+
+# ──────────────────────────────────────
+# TIMESLOT VIEWS
+# ──────────────────────────────────────
+
+class TimeSlotListCreateView(generics.ListCreateAPIView):
+    """
+    GET  → Lista time slots di un evento
+    POST → Aggiungi time slot a un evento
+    """
+    serializer_class = TimeSlotSerializer
+
+    def get_queryset(self):
+        event_id = self.kwargs['event_id']
+        return TimeSlot.objects.filter(event_id=event_id)
+
+    def perform_create(self, serializer):
+        event_id = self.kwargs['event_id']
+        event = Event.objects.get(pk=event_id)
+        serializer.save(event=event)
+
+
+class TimeSlotDeleteView(generics.DestroyAPIView):
+    """DELETE → Elimina un time slot"""
+    queryset = TimeSlot.objects.all()
+    serializer_class = TimeSlotSerializer
+    lookup_field = 'pk'
+
+
+# ──────────────────────────────────────
+# VOTE VIEWS
+# ──────────────────────────────────────
+
+class VoteCreateUpdateView(generics.CreateAPIView):
+    """
+    POST → Crea voto (o aggiorna se esiste già)
     
-    @staticmethod
-    def create_event(creator_id: int, title: str, description: str, 
-                     event_type: str, start_date: datetime, end_date: datetime):
-        """Create new event"""
-        db = SessionLocal()
-        try:
-            event = EventAdmin.create_event(db, creator_id, title, description, 
-                                           event_type, start_date, end_date)
-            return event
-        finally:
-            db.close()
+    Voter can vote on a time slot. If they already voted,
+    their vote gets UPDATED automatically.
+    """
+    queryset = Vote.objects.all()
+    serializer_class = VoteCreateUpdateSerializer
+
+
+class VoteDeleteView(generics.DestroyAPIView):
+    """DELETE → Rimuovi un voto"""
+    queryset = Vote.objects.all()
+    serializer_class = VoteSerializer
+    lookup_field = 'pk'
+
+
+class BulkVoteView(APIView):
+    """
+    POST → Vota su più time slots in una sola richiesta
     
-    @staticmethod
-    def invite_participant(event_id: int, user_id: int):
-        """Invite user to event"""
-        db = SessionLocal()
-        try:
-            participant = Participant(event_id=event_id, user_id=user_id)
-            db.add(participant)
-            db.commit()
-            return participant
-        finally:
-            db.close()
-    
-    @staticmethod
-    def add_time_slot(event_id: int, slot_date=None, start_time=None, end_time=None):
-        """Add time slot to event"""
-        db = SessionLocal()
-        try:
-            slot = TimeSlot(
-                event_id=event_id,
-                slot_date=slot_date,
-                start_time=start_time,
-                end_time=end_time
+    Body:
+    {
+        "voter_name": "Mario",
+        "votes": [
+            {"time_slot": "uuid-1", "choice": "available"},
+            {"time_slot": "uuid-2", "choice": "maybe"},
+            {"time_slot": "uuid-3", "choice": "unavailable"}
+        ]
+    }
+    """
+    def post(self, request):
+        voter_name = request.data.get('voter_name')
+        votes_data = request.data.get('votes', [])
+
+        if not voter_name:
+            return Response(
+                {"error": "voter_name is required"},
+                status=status.HTTP_400_BAD_REQUEST
             )
-            db.add(slot)
-            db.commit()
-            return slot
-        finally:
-            db.close()
+
+        results = []
+        for vote_data in votes_data:
+            vote, created = Vote.objects.update_or_create(
+                time_slot_id=vote_data['time_slot'],
+                voter_name=voter_name,
+                defaults={'choice': vote_data['choice']}
+            )
+            results.append({
+                'id': str(vote.id),
+                'time_slot': str(vote.time_slot_id),
+                'voter_name': vote.voter_name,
+                'choice': vote.choice,
+                'created': created
+            })
+
+        return Response(results, status=status.HTTP_200_OK)
+
+
+# ──────────────────────────────────────
+# RESULTS VIEW
+# ──────────────────────────────────────
+
+class EventResultsView(APIView):
+    """
+    GET → Overview di tutte le risposte + best option
     
-    @staticmethod
-    def set_preference(event_id: int, user_id: int, time_slot_id: int, status: str):
-        """Set or update user preference for a time slot"""
-        db = SessionLocal()
+    Returns:
+    - event details
+    - total participants
+    - list of all participants
+    - time slots ranked by score
+    - best time slot (highest score)
+    """
+    def get(self, request, event_id):
         try:
-            # Check if preference exists
-            preference = db.query(Preference).filter(
-                Preference.event_id == event_id,
-                Preference.user_id == user_id,
-                Preference.time_slot_id == time_slot_id
-            ).first()
-            
-            if preference:
-                preference.status = PreferenceStatus[status.upper()]
-                preference.updated_at = datetime.utcnow()
-            else:
-                preference = Preference(
-                    event_id=event_id,
-                    user_id=user_id,
-                    time_slot_id=time_slot_id,
-                    status=PreferenceStatus[status.upper()]
-                )
-                db.add(preference)
-            
-            # Update participant response time
-            participant = db.query(Participant).filter(
-                Participant.event_id == event_id,
-                Participant.user_id == user_id
-            ).first()
-            
-            if participant:
-                participant.responded_at = datetime.utcnow()
-            
-            db.commit()
-            return preference
-        finally:
-            db.close()
+            event = Event.objects.get(pk=event_id)
+        except Event.DoesNotExist:
+            return Response(
+                {"error": "Event not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        time_slots = event.time_slots.all()
+
+        # Get all unique participants
+        all_participants = list(
+            Vote.objects.filter(time_slot__event=event)
+            .values_list('voter_name', flat=True)
+            .distinct()
+        )
+
+        # Rank time slots by score (available*2 + maybe*1)
+        ranked_slots = sorted(time_slots, key=lambda s: s.score, reverse=True)
+
+        # Best slot = highest score (None if no votes)
+        best_slot = ranked_slots[0] if ranked_slots and ranked_slots[0].score > 0 else None
+
+        # Build response
+        data = {
+            'event': EventSerializer(event).data,
+            'total_participants': len(all_participants),
+            'all_participants': all_participants,
+            'time_slots_ranked': TimeSlotResultSerializer(ranked_slots, many=True).data,
+            'best_slot': TimeSlotResultSerializer(best_slot).data if best_slot else None,
+        }
+
+        return Response(data)
+
+
+# ──────────────────────────────────────
+# PARTICIPANT VIEW (what a voter voted)
+# ──────────────────────────────────────
+
+class ParticipantVotesView(APIView):
+    """
+    GET → Mostra tutti i voti di un partecipante per un evento
     
-    @staticmethod
-    def get_event_details(event_id: int):
-        """Get event details with all preferences"""
-        db = SessionLocal()
-        try:
-            return EventAdmin.get_event_overview(db, event_id)
-        finally:
-            db.close()
-    
-    @staticmethod
-    def finalize_event(event_id: int):
-        """Finalize event, calculate best slot, and notify participants"""
-        db = SessionLocal()
-        try:
-            # Check quorum
-            quorum_status = PreferenceAdmin.check_quorum(db, event_id, quorum_percentage=0.5)
-            
-            # Calculate best slot
-            best_slot = PreferenceAdmin.calculate_best_slot(db, event_id)
-            
-            # Close event
-            EventAdmin.close_event(db, event_id)
-            
-            return {
-                "quorum_status": quorum_status,
-                "best_slot": best_slot,
-                "event_overview": EventAdmin.get_event_overview(db, event_id)
+    Utile per pre-popolare il form quando un partecipante
+    vuole AGGIORNARE le sue risposte
+    """
+    def get(self, request, event_id, voter_name):
+        votes = Vote.objects.filter(
+            time_slot__event_id=event_id,
+            voter_name=voter_name
+        )
+
+        data = [
+            {
+                'time_slot': str(vote.time_slot_id),
+                'choice': vote.choice,
+                'updated_at': vote.updated_at
             }
-        finally:
-            db.close()
-# Create your views here.
+            for vote in votes
+        ]
+
+        return Response({
+            'voter_name': voter_name,
+            'event_id': str(event_id),
+            'votes': data
+        })
